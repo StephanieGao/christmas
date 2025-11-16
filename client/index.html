@@ -41,18 +41,24 @@
         </div>
       </section>
 
-      <section class="panel hidden" id="hud-panel">
-        <div class="hud-row compact">
-          <div class="session-display">
-            <h2>Session Code</h2>
-            <span id="session-code">--</span>
-          </div>
-          <button id="customize-toggle" class="dashboard-btn hidden">
-            <span class="icon">🎀</span>
-            Customize
-          </button>
+      <section class="panel hud-chip hidden" id="hud-panel">
+        <div class="session-display">
+          <span class="label">Session Code</span>
+          <span class="value" id="session-code">--</span>
         </div>
       </section>
+
+      <section class="panel strand-chip hidden" id="strand-bar">
+        <div class="strand-title">
+          <span class="strand-label">Light Strand</span>
+          <span id="bulb-count" class="strand-count">0/0</span>
+        </div>
+        <div id="strand-sockets" class="strand-sockets"></div>
+      </section>
+
+      <button id="customize-toggle" class="bow-button hidden" aria-label="Customize Avatar">
+        <span aria-hidden="true">🎀</span>
+      </button>
 
       <div id="toast"></div>
 
