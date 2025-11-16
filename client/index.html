@@ -15,13 +15,22 @@
           <div class="story-actions">
             <button id="start-session" class="story-btn primary">Start Cozy Session</button>
           </div>
+          <div class="character-select" id="story-character-select">
+            <button class="character-card active" data-character="steph" type="button">
+              <span class="avatar-icon steph"></span>
+              <span class="name">Steph</span>
+            </button>
+            <button class="character-card" data-character="forrest" type="button">
+              <span class="avatar-icon forrest"></span>
+              <span class="name">Forrest</span>
+            </button>
+          </div>
           <div class="join-card">
             <h3>Already have an invite code?</h3>
             <div class="join-input">
               <input id="join-code" placeholder="ABC123" maxlength="6" />
               <button id="join-session" class="story-btn ghost">Join Cozy Session</button>
             </div>
-            <p class="hint">Ask your partner for their code and jump into the same town.</p>
           </div>
         </div>
       </section>
@@ -69,6 +78,16 @@
         <button id="customize-close" class="close-btn">✕</button>
         <h2>Cozy Avatar</h2>
         <div class="customize-grid">
+          <div class="character-select compact" id="modal-character-select">
+            <button class="character-card active" data-character="steph" type="button">
+              <span class="avatar-icon steph"></span>
+              <span class="name">Steph</span>
+            </button>
+            <button class="character-card" data-character="forrest" type="button">
+              <span class="avatar-icon forrest"></span>
+              <span class="name">Forrest</span>
+            </button>
+          </div>
           <div class="customize-section">
             <h3>Colors</h3>
             <label>

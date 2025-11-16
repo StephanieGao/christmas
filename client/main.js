@@ -24,6 +24,7 @@ const customizeToggleBtn = document.getElementById('customize-toggle');
 const customizeModal = document.getElementById('customize-modal');
 const customizeCloseBtn = document.getElementById('customize-close');
 const bulbCountLabel = document.getElementById('bulb-count');
+const strandBar = document.getElementById('strand-bar');
 const throwMeterEl = document.getElementById('throw-meter');
 const throwMeterFill = throwMeterEl ? throwMeterEl.querySelector('.fill') : null;
 const throwMeterLabel = document.getElementById('throw-meter-label');
@@ -34,12 +35,16 @@ const joinCard = document.getElementById('join-card');
 const hudCollapseBtn = document.getElementById('hud-collapse');
 const strandSocketsEl = document.getElementById('strand-sockets');
 
+if (strandBar) {
+  strandBar.classList.add('hidden');
+}
+
 const renderer = new THREE.WebGLRenderer({
   canvas,
   antialias: true,
   alpha: true,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = false;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -75,17 +80,22 @@ const EDGE_TILT_SPEED = 0.4;
 const STRAND_SOCKET_COUNT = 8;
 const STRAND_SEGMENTS = 12;
 const BULB_COLORS = ['#ff9aa0', '#ffe48f', '#a2f2cb', '#93d0ff', '#f7b6ff', '#fff4c8'];
-const BULB_PICKUP_COUNT = 32;
+const BULB_PICKUP_COUNT = 20;
 const THROW_FULL_DURATION = 900;
 const THROW_MIN_DURATION = 400;
 const HIGHLIGHT_UPDATE_INTERVAL = 1 / 45;
 const PICKUP_UPDATE_INTERVAL = 1 / 40;
 const COLLECTIBLE_UPDATE_INTERVAL = 1 / 35;
 const HOUSE_GLOW_INTERVAL = 1 / 30;
+const DROP_GRAVITY = 12;
 
 const clock = new THREE.Clock();
 let elapsedTime = 0;
 const placementSurfaces = [];
+const terrainMeshes = [];
+const terrainRaycaster = new THREE.Raycaster();
+const terrainSampleOrigin = new THREE.Vector3();
+const terrainDown = new THREE.Vector3(0, -1, 0);
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const decorZones = [];
@@ -93,11 +103,15 @@ const collectibles = [];
 const bulbPickups = [];
 const bulbSpawnBounds = { x: 110, z: 110 };
 let pickupSpawnContext = null;
+let manualBulbSpawner = null;
 const throwEffects = [];
+const dropProjectiles = [];
 const sparkEffects = [];
+let lastStrandFullWarning = 0;
 const houseGlowState = new Map();
 const footstepGroup = new THREE.Group();
 const footprints = [];
+const MAX_FOOTPRINTS = 32;
 let footstepCooldown = 0;
 let playerIsMoving = false;
 let highlightAccumulator = 0;
@@ -173,6 +187,14 @@ const throwState = {
   startTime: 0,
   progress: 0,
 };
+const movementState = {
+  baseSpeed: 5,
+  boostTimer: 0,
+  boostDuration: 3,
+  boostMultiplier: 2.1,
+};
+const zoomState = { offset: 0, target: 0 };
+const jumpState = { velocity: 0, offset: 0, grounded: true };
 const tempVecA = new THREE.Vector3();
 const tempVecB = new THREE.Vector3();
 const tempVecC = new THREE.Vector3();
@@ -194,7 +216,7 @@ scene.add(footstepGroup);
 initLightStrand();
 initStrandUI();
 
-const snowSystem = createSnowSystem(260);
+const snowSystem = createSnowSystem(180);
 scene.add(snowSystem.points);
 
 setupUI();
@@ -313,6 +335,7 @@ function buildVillage() {
   collectibles.length = 0;
   bulbPickups.length = 0;
   houseGlowState.clear();
+  terrainMeshes.length = 0;
   const groundGeo = new THREE.PlaneGeometry(160, 160, 120, 120);
   const pos = groundGeo.attributes.position;
   for (let i = 0; i < pos.count; i += 1) {
@@ -335,6 +358,7 @@ function buildVillage() {
   ground.receiveShadow = true;
   ground.rotation.x = -Math.PI / 2;
   scene.add(ground);
+  terrainMeshes.push(ground);
   const groundBase = new THREE.Mesh(
     new THREE.PlaneGeometry(320, 320),
     new THREE.MeshBasicMaterial({ color: 0xffffff }),
@@ -572,11 +596,13 @@ function buildVillage() {
   const pond = createFrozenPond(11);
   pond.position.set(laneCenterX - 12, -0.02, 18);
   scene.add(pond);
+  terrainMeshes.push(pond);
   const bridge = createWoodenBridge(16);
   bridge.position.copy(pond.position);
   bridge.position.y = 0.6;
   bridge.rotation.y = Math.PI / 2;
   scene.add(bridge);
+  terrainMeshes.push(bridge);
 
   const pathAreas = computePathBounds(pathSegments);
   const snowMounds = new THREE.Group();
@@ -590,6 +616,7 @@ function buildVillage() {
       attempts += 1;
     } while (isOnPath(mound.position, pathAreas) && attempts < 10);
     snowMounds.add(mound);
+    terrainMeshes.push(mound);
   }
   scene.add(snowMounds);
 
@@ -605,6 +632,7 @@ function buildVillage() {
         config.position.z + (Math.random() - 0.5) * 5,
       );
       cabinPiles.add(drift);
+      terrainMeshes.push(drift);
     }
   });
   scene.add(cabinPiles);
@@ -689,24 +717,57 @@ function buildVillage() {
     }
   }
 
-  function spawnSingleBulb() {
-    if (!pickupSpawnContext) return null;
-    const { pathAreas, cabinBounds } = pickupSpawnContext;
-    const color = BULB_COLORS[Math.floor(Math.random() * BULB_COLORS.length)];
+  function spawnSingleBulb(options = {}) {
+    if (!pickupSpawnContext && !options.position) return null;
+    const color = options.color || BULB_COLORS[Math.floor(Math.random() * BULB_COLORS.length)];
     const pickup = createBulbPickup(color);
-    const position = findSpawnPosition(pathAreas, cabinBounds);
+    let position;
+    if (options.position) {
+      const pos = options.position;
+      position = pos.clone ? pos.clone() : new THREE.Vector3(pos.x || 0, pos.y || 0, pos.z || 0);
+    } else {
+      const { pathAreas, cabinBounds } = pickupSpawnContext;
+      position = findSpawnPosition(pathAreas, cabinBounds);
+    }
+    const terrainY = sampleTerrainHeight(position);
+    position.y = terrainY + 0.02;
+    const baseY = options.baseY ?? position.y;
+    const restHeight = options.restHeight ?? baseY + 0.12;
+    const dropHeight =
+      options.dropHeight && options.dropHeight > restHeight ? options.dropHeight : restHeight;
     pickup.position.copy(position);
+    pickup.position.y = dropHeight;
     const entry = {
       mesh: pickup,
       color,
-      baseY: pickup.position.y,
+      baseY,
+      restHeight,
       wobbleOffset: Math.random() * Math.PI * 2,
       collected: false,
+      isDropping: dropHeight > restHeight + 0.01,
+      dropSpeed: options.dropSpeed || 3,
+      dropVelocity: options.dropVelocity ? options.dropVelocity.clone() : null,
+      immuneUntil: options.immuneUntil || 0,
+      requireExitBeforeCollect: Boolean(options.requireExitBeforeCollect),
     };
     scene.add(pickup);
     bulbPickups.push(entry);
     return entry;
   }
+  manualBulbSpawner = (options = {}) => {
+    const entry = spawnSingleBulb(options);
+    if (entry) {
+      entry.wobbleOffset = options.wobbleOffset ?? entry.wobbleOffset;
+      entry.isDropping = options.isDropping ?? entry.isDropping;
+      entry.dropSpeed = options.dropSpeed || entry.dropSpeed;
+      entry.requireExitBeforeCollect =
+        options.requireExitBeforeCollect ?? entry.requireExitBeforeCollect;
+      entry.immuneUntil = options.immuneUntil ?? entry.immuneUntil;
+      entry.baseY = options.baseY ?? entry.baseY;
+      entry.restHeight = options.restHeight ?? entry.restHeight;
+    }
+    return entry;
+  };
 
   function findSpawnPosition(pathAreas, cabinBounds) {
     const position = new THREE.Vector3();
@@ -1138,27 +1199,6 @@ function createCabin(config) {
     );
     wreath.position.set(0, style.body.height * 0.85, style.body.depth / 2 + 0.2);
     group.add(wreath);
-  }
-
-  if (style.stringLightsColor) {
-    const lights = new THREE.Group();
-    const bulbMat = new THREE.MeshStandardMaterial({
-      color: style.stringLightsColor,
-      emissive: style.stringLightsColor,
-      emissiveIntensity: 0.8,
-    });
-    const bulbCount = 10;
-    for (let i = 0; i < bulbCount; i += 1) {
-      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 10), bulbMat);
-      const t = i / (bulbCount - 1);
-      bulb.position.set(
-        -style.body.width * 0.45 + t * style.body.width * 0.9,
-        style.body.height + 0.5 + Math.sin(t * Math.PI) * 0.7,
-        style.body.depth / 2 + 0.35,
-      );
-      lights.add(bulb);
-    }
-    group.add(lights);
   }
 
   if (style.porch) {
@@ -2114,6 +2154,16 @@ function setupInput() {
       case 'arrowright':
         inputState.right = true;
         break;
+      case 'z':
+        triggerSpeedBoost();
+        break;
+      case ' ':
+        event.preventDefault();
+        attemptJump();
+        break;
+      case 'x':
+        dropStrandBulb();
+        break;
       case 'p':
         photoModeBtn.click();
         break;
@@ -2240,6 +2290,77 @@ function setupInput() {
   window.addEventListener('touchmove', handleTouchMove, { passive: false });
 }
 
+function triggerSpeedBoost() {
+  movementState.boostTimer = movementState.boostDuration;
+  playChime([540, 760]);
+}
+
+function attemptJump() {
+  if (!jumpState.grounded) return;
+  jumpState.grounded = false;
+  jumpState.velocity = 4.6;
+  jumpState.offset = 0.01;
+  playChime([520]);
+}
+
+function dropStrandBulb() {
+  let dropIndex = -1;
+  for (let i = strandState.sockets.length - 1; i >= 0; i -= 1) {
+    if (strandState.sockets[i]) {
+      dropIndex = i;
+      break;
+    }
+  }
+  if (dropIndex === -1) {
+    showToast('No bulbs to drop yet!');
+    return;
+  }
+  const color = strandState.sockets[dropIndex];
+  strandState.sockets[dropIndex] = null;
+  updateStrandVisual(dropIndex);
+  updateStrandUI();
+  const forward = new THREE.Vector3(0, 0, 1).applyAxisAngle(
+    new THREE.Vector3(0, 1, 0),
+    localPlayer.group.rotation.y || 0,
+  );
+  forward.multiplyScalar(2.4);
+  const landing = localPlayer.group.position.clone().add(forward);
+  const terrainY = sampleTerrainHeight(landing);
+  landing.y = terrainY + 0.02;
+  const origin = new THREE.Vector3(0.15, 1.18, 0.4);
+  localPlayer.group.localToWorld(origin);
+  const control = origin.clone().lerp(landing, 0.5);
+  control.y = Math.max(origin.y, landing.y) + 1.2;
+  const projectile = createBulbPickup(color);
+  projectile.scale.setScalar(0.7);
+  scene.add(projectile);
+  dropProjectiles.push({
+    mesh: projectile,
+    start: origin.clone(),
+    control,
+    end: landing.clone(),
+    color,
+    startTime: performance.now(),
+    duration: 520,
+  });
+  spawnDropSpark(origin, color);
+}
+
+function spawnDropSpark(position, color) {
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      color,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  sprite.scale.set(0.65, 0.65, 0.65);
+  sprite.position.copy(position);
+  scene.add(sprite);
+  sparkEffects.push({ sprite, start: performance.now(), duration: 320 });
+}
+
 function onResize() {
   const { innerWidth, innerHeight } = window;
   renderer.setSize(innerWidth, innerHeight);
@@ -2277,6 +2398,9 @@ function openJoinPopup() {
 function showStoryIntro() {
   if (!storyIntroPanel) return;
   storyIntroPanel.classList.remove('hidden');
+  if (strandBar) {
+    strandBar.classList.add('hidden');
+  }
 }
 
 function completeStoryIntro() {
@@ -2296,6 +2420,9 @@ function showHudPanel() {
   showToast('Connected! Invite your partner with the code above.');
   if (customizeToggleBtn) {
     customizeToggleBtn.classList.remove('hidden');
+  }
+  if (strandBar) {
+    strandBar.classList.remove('hidden');
   }
 }
 
@@ -2376,6 +2503,10 @@ function attemptDecorationPlacement(event) {
   if (!localState.sessionCode) return;
   const zone = intersectDecorZone(event);
   if (zone) {
+    if (!isStrandFull()) {
+      showToast('Collect a full strand before decorating!');
+      return;
+    }
     openRadialMenu(zone, { x: event.clientX, y: event.clientY });
   }
 }
@@ -2572,12 +2703,18 @@ function animate() {
   requestAnimationFrame(animate);
   const delta = clock.getDelta();
   elapsedTime += delta;
+  updateSnow(delta);
+  const worldActive = uiState.storyComplete && Boolean(localState.sessionCode);
+  if (!worldActive) {
+    renderer.render(scene, camera);
+    return;
+  }
   updatePlayer(delta, elapsedTime);
   updateLightStrand(delta, elapsedTime);
   updateThrowCharge();
   updateThrowEffects(delta);
+  updateDropProjectiles();
   updateSparkEffects(delta);
-  updateSnow(delta);
   highlightAccumulator += delta;
   if (highlightAccumulator >= HIGHLIGHT_UPDATE_INTERVAL) {
     updateDecorZoneHighlights(highlightAccumulator);
@@ -2630,6 +2767,14 @@ function updatePlayer(delta, elapsed) {
     cameraOrbit.pitch = THREE.MathUtils.lerp(cameraOrbit.pitch, pitchTarget, 0.08);
   }
 
+  if (movementState.boostTimer > 0) {
+    movementState.boostTimer = Math.max(0, movementState.boostTimer - delta);
+    if (movementState.boostTimer <= 0) {
+      zoomState.target = 0;
+    }
+  }
+  zoomState.offset = THREE.MathUtils.lerp(zoomState.offset, zoomState.target, 0.12);
+
   const forwardInput = (inputState.forward ? 1 : 0) - (inputState.backward ? 1 : 0);
   const strafeInput = (inputState.right ? 1 : 0) - (inputState.left ? 1 : 0);
   const forwardDir = new THREE.Vector3(
@@ -2643,16 +2788,18 @@ function updatePlayer(delta, elapsed) {
   if (forwardInput !== 0) moveVector.add(forwardDir.clone().multiplyScalar(forwardInput));
   if (strafeInput !== 0) moveVector.add(rightDir.clone().multiplyScalar(strafeInput));
 
+  const speedMultiplier = movementState.boostTimer > 0 ? movementState.boostMultiplier : 1;
+  const moveSpeed = movementState.baseSpeed * speedMultiplier;
   const isMoving = moveVector.lengthSq() > 0;
   playerIsMoving = isMoving;
   if (isMoving) {
     const facing = moveVector.clone().normalize();
-    localPlayer.group.position.add(facing.multiplyScalar(delta * 5));
+    localPlayer.group.position.add(facing.multiplyScalar(delta * moveSpeed));
     const angle = Math.atan2(moveVector.x, moveVector.z);
     localPlayer.group.rotation.y = angle;
     sendAvatarUpdate();
     footstepCooldown -= delta;
-    if (footstepCooldown <= 0) {
+    if (jumpState.grounded && footstepCooldown <= 0) {
       footstepCooldown = 0.35;
       spawnFootprint(localPlayer.group.position, angle);
       playFootstepSound();
@@ -2661,13 +2808,24 @@ function updatePlayer(delta, elapsed) {
     footstepCooldown = Math.max(0, footstepCooldown - delta * 0.5);
   }
 
+  if (!jumpState.grounded) {
+    jumpState.velocity -= 9.5 * delta;
+    jumpState.offset += jumpState.velocity * delta;
+    if (jumpState.offset <= 0) {
+      jumpState.offset = 0;
+      jumpState.velocity = 0;
+      jumpState.grounded = true;
+    }
+  }
+
   const baseHeight = 0;
   const bob = isMoving ? Math.max(0, Math.sin(elapsed * 6) * 0.08) : 0;
-  const targetBob = baseHeight + bob;
+  const targetBob = baseHeight + bob + jumpState.offset;
+  const lerpFactor = jumpState.grounded ? (isMoving ? 0.35 : 0.2) : 1;
   localPlayer.group.position.y = THREE.MathUtils.lerp(
     localPlayer.group.position.y,
     targetBob,
-    isMoving ? 0.35 : 0.2,
+    lerpFactor,
   );
 
   cameraTarget.lerp(localPlayer.group.position, 0.08);
@@ -2675,7 +2833,7 @@ function updatePlayer(delta, elapsed) {
     Math.sin(cameraOrbit.yaw) * Math.cos(cameraOrbit.pitch),
     Math.sin(cameraOrbit.pitch),
     Math.cos(cameraOrbit.yaw) * Math.cos(cameraOrbit.pitch),
-  ).multiplyScalar(cameraOrbit.distance);
+  ).multiplyScalar(Math.max(6, cameraOrbit.distance + zoomState.offset));
 
   const desiredPosition = localPlayer.group.position.clone().add(offset);
   camera.position.lerp(desiredPosition, 0.08);
@@ -2731,6 +2889,12 @@ function spawnFootprint(position, rotation) {
   footprint.position.set(position.x, 0.04, position.z);
   footstepGroup.add(footprint);
   footprints.push({ mesh: footprint, life: 4 });
+  if (footprints.length > MAX_FOOTPRINTS) {
+    const removed = footprints.shift();
+    if (removed) {
+      footstepGroup.remove(removed.mesh);
+    }
+  }
 }
 
 function updateFootprints(delta) {
@@ -2827,16 +2991,12 @@ function isStrandFull() {
 
 function addBulbToStrand(color) {
   if (!color) return false;
-  let index = strandState.sockets.findIndex((slot) => slot === null);
+  const index = strandState.sockets.findIndex((slot) => slot === null);
   if (index === -1) {
-    strandState.sockets.shift();
-    strandState.sockets.push(color);
-    index = strandState.sockets.length - 1;
-    strandState.socketMaterials.forEach((_, idx) => updateStrandVisual(idx));
-  } else {
-    strandState.sockets[index] = color;
-    updateStrandVisual(index);
+    return false;
   }
+  strandState.sockets[index] = color;
+  updateStrandVisual(index);
   updateStrandUI();
   const sparkOrigin = tempVecA.set(0, 1.2, 0.55);
   localPlayer.group.localToWorld(sparkOrigin);
@@ -2888,16 +3048,51 @@ function updateBulbPickups(delta, elapsed) {
   for (let i = bulbPickups.length - 1; i >= 0; i -= 1) {
     const pickup = bulbPickups[i];
     if (pickup.collected) continue;
-    pickup.mesh.rotation.y += delta * 0.8;
-    pickup.mesh.position.y = pickup.baseY + Math.sin(elapsed * 3 + pickup.wobbleOffset) * 0.18;
+    if (pickup.isDropping) {
+      if (!pickup.dropVelocity) {
+        const speed = pickup.dropSpeed || 3;
+        pickup.dropVelocity = new THREE.Vector3(0, -Math.abs(speed), 0);
+      }
+      pickup.dropVelocity.y -= DROP_GRAVITY * delta;
+      pickup.mesh.position.addScaledVector(pickup.dropVelocity, delta);
+      if (pickup.mesh.position.y <= pickup.baseY) {
+        pickup.mesh.position.y = pickup.restHeight;
+        pickup.isDropping = false;
+        pickup.dropVelocity.set(0, 0, 0);
+        pickup.immuneUntil = performance.now() + 250;
+      }
+      continue;
+    } else {
+      pickup.mesh.rotation.y += delta * 0.8;
+      const wobble = Math.sin(elapsed * 3 + pickup.wobbleOffset) * 0.08;
+      pickup.mesh.position.y = pickup.restHeight + wobble;
+    }
+    const now = performance.now();
+    if (pickup.immuneUntil && now < pickup.immuneUntil) {
+      continue;
+    }
     const distance = pickup.mesh.position.distanceTo(localPlayer.group.position);
+    if (pickup.requireExitBeforeCollect) {
+      if (distance > 2.6) {
+        pickup.requireExitBeforeCollect = false;
+      } else {
+        continue;
+      }
+    }
     if (distance < 1.6) {
-      addBulbToStrand(pickup.color);
+      if (!addBulbToStrand(pickup.color)) {
+        const now = performance.now();
+        if (now - lastStrandFullWarning > 1200) {
+          showToast('Your strand is full! Drop a bulb with X or decorate a house.');
+          lastStrandFullWarning = now;
+        }
+        continue;
+      }
       pickup.collected = true;
       scene.remove(pickup.mesh);
       bulbPickups.splice(i, 1);
       playChime([900, 1120]);
-      spawnSingleBulb(pickup.pathAreas, pickup.cabinBounds);
+      spawnSingleBulb();
     }
   }
 }
@@ -3036,6 +3231,55 @@ function updateThrowEffects(delta) {
       throwEffects.splice(i, 1);
     }
   }
+}
+
+function updateDropProjectiles() {
+  const now = performance.now();
+  for (let i = dropProjectiles.length - 1; i >= 0; i -= 1) {
+    const effect = dropProjectiles[i];
+    const t = Math.min(1, (now - effect.startTime) / effect.duration);
+    const position = evaluateQuadratic(effect.start, effect.control, effect.end, t);
+    effect.mesh.position.copy(position);
+    if (t >= 1) {
+      dropProjectiles.splice(i, 1);
+      const spawnPoint = effect.end.clone();
+      const groundY = sampleTerrainHeight(spawnPoint);
+      const baseY = groundY + 0.04;
+      const restHeight = baseY + 0.16;
+      spawnPoint.y = restHeight;
+      effect.mesh.position.copy(spawnPoint);
+      bulbPickups.push({
+        mesh: effect.mesh,
+        color: effect.color,
+        baseY,
+        restHeight,
+        wobbleOffset: Math.random() * Math.PI * 2,
+        collected: false,
+        isDropping: false,
+        dropSpeed: 3,
+        dropVelocity: null,
+        immuneUntil: performance.now() + 350,
+        requireExitBeforeCollect: false,
+      });
+    }
+  }
+}
+
+function evaluateQuadratic(a, b, c, t) {
+  const ab = new THREE.Vector3().lerpVectors(a, b, t);
+  const bc = new THREE.Vector3().lerpVectors(b, c, t);
+  return new THREE.Vector3().lerpVectors(ab, bc, t);
+}
+
+function sampleTerrainHeight(position) {
+  if (!terrainMeshes.length) return position.y || 0;
+  terrainSampleOrigin.set(position.x, 50, position.z);
+  terrainRaycaster.set(terrainSampleOrigin, terrainDown);
+  const intersections = terrainRaycaster.intersectObjects(terrainMeshes, true);
+  if (intersections.length > 0) {
+    return intersections[0].point.y;
+  }
+  return position.y || 0;
 }
 
 function boostHouseGlow(cabinId) {

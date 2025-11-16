@@ -67,12 +67,6 @@ body {
   margin: 0;
 }
 
-.bottom-hint {
-  display: block;
-  margin-top: 48px;
-  text-align: center;
-}
-
 .story-panel {
   min-height: 100vh;
   display: flex;
@@ -315,14 +309,15 @@ input[type='color'] {
 }
 
 .panel.hud-chip {
-  padding: 12px 18px 16px;
-  max-width: 240px;
+  padding: 10px 14px;
+  max-width: 200px;
   position: fixed;
   top: 24px;
   left: 24px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
+  border-radius: 14px;
   z-index: 5;
 }
 
@@ -360,7 +355,7 @@ input[type='color'] {
 .bow-button {
   position: fixed;
   top: 24px;
-  left: 288px;
+  right: 24px;
   width: 48px;
   height: 48px;
   border-radius: 50%;
@@ -374,7 +369,6 @@ input[type='color'] {
   display: flex;
   align-items: center;
   justify-content: center;
-  align-self: flex-start;
 }
 
 .bow-button:hover {
