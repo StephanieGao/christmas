@@ -103,7 +103,7 @@ const collectibles = [];
 const bulbPickups = [];
 const bulbSpawnBounds = { x: 110, z: 110 };
 let pickupSpawnContext = null;
-let manualBulbSpawner = null;
+
 const throwEffects = [];
 const dropProjectiles = [];
 const sparkEffects = [];
@@ -136,10 +136,7 @@ const CHARACTER_PRESETS = {
     label: 'Forrest',
   },
 };
-const collectibleUnlocks = [
-  { type: 'star_bulbs', label: 'Star Bulbs' },
-  { type: 'icicle_lights', label: 'Icicle Lights' },
-];
+
 let audioCtx;
 const uiState = {
   awaitingStoryIntro: false,
