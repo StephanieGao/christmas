@@ -754,20 +754,8 @@ function buildVillage() {
     bulbPickups.push(entry);
     return entry;
   }
-  manualBulbSpawner = (options = {}) => {
-    const entry = spawnSingleBulb(options);
-    if (entry) {
-      entry.wobbleOffset = options.wobbleOffset ?? entry.wobbleOffset;
-      entry.isDropping = options.isDropping ?? entry.isDropping;
-      entry.dropSpeed = options.dropSpeed || entry.dropSpeed;
-      entry.requireExitBeforeCollect =
-        options.requireExitBeforeCollect ?? entry.requireExitBeforeCollect;
-      entry.immuneUntil = options.immuneUntil ?? entry.immuneUntil;
-      entry.baseY = options.baseY ?? entry.baseY;
-      entry.restHeight = options.restHeight ?? entry.restHeight;
-    }
-    return entry;
-  };
+
+ 
 
   function findSpawnPosition(pathAreas, cabinBounds) {
     const position = new THREE.Vector3();
@@ -1434,28 +1422,7 @@ function createWoodenBridge(length = 12) {
   return group;
 }
 
-function createCollectible(type, label) {
-  const palette = {
-    star_bulbs: 0xfff9b5,
-    icicle_lights: 0xbbe7ff,
-  };
-  const color = palette[type] || 0xffffff;
-  const group = new THREE.Group();
-  const orb = new THREE.Mesh(
-    new THREE.SphereGeometry(0.6, 16, 16),
-    new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.7 }),
-  );
-  group.add(orb);
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(0.85, 0.08, 12, 32),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: color, emissiveIntensity: 0.4 }),
-  );
-  ring.rotation.x = Math.PI / 2;
-  group.add(ring);
-  group.add(new THREE.PointLight(color, 1.4, 6));
-  group.userData.label = label;
-  return group;
-}
+
 
 function createBulbPickup(color) {
   const group = new THREE.Group();
@@ -1480,56 +1447,6 @@ function createBulbPickup(color) {
   group.add(cap);
   group.add(new THREE.PointLight(new THREE.Color(color).getHex(), 0.8, 4));
   return group;
-}
-
-function generateLogTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 256;
-  const ctx = canvas.getContext('2d');
-  ctx.fillStyle = '#c66726';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  const logHeight = 32;
-  for (let y = -logHeight; y < canvas.height + logHeight; y += logHeight) {
-    const gradient = ctx.createLinearGradient(0, y, 0, y + logHeight);
-    gradient.addColorStop(0, '#7a2f07');
-    gradient.addColorStop(0.25, '#b35b1b');
-    gradient.addColorStop(0.5, '#e38b3d');
-    gradient.addColorStop(0.75, '#b35317');
-    gradient.addColorStop(1, '#6a2704');
-    ctx.fillStyle = gradient;
-    ctx.fillRect(0, y, canvas.width, logHeight);
-
-    ctx.fillStyle = 'rgba(0,0,0,0.12)';
-    ctx.fillRect(0, y + logHeight - 3, canvas.width, 3);
-
-    ctx.fillStyle = 'rgba(255,255,255,0.15)';
-    ctx.fillRect(0, y + 4, canvas.width, 2);
-
-    ctx.strokeStyle = 'rgba(96, 60, 30, 0.35)';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(canvas.width, y);
-    ctx.stroke();
-
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(canvas.width * 0.1, y + logHeight * 0.35);
-    ctx.quadraticCurveTo(canvas.width * 0.4, y + logHeight * 0.15, canvas.width * 0.65, y + logHeight * 0.3);
-    ctx.stroke();
-
-    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(canvas.width * 0.2, y + logHeight * 0.55);
-    ctx.quadraticCurveTo(canvas.width * 0.45, y + logHeight * 0.35, canvas.width * 0.85, y + logHeight * 0.5);
-    ctx.stroke();
-  }
-
-  return canvas;
 }
 
 function generateStoneTexture() {
