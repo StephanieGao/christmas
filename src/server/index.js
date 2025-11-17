@@ -15,6 +15,7 @@ const app = express();
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
 
+app.use(express.static(path.join(__dirname, '..', '..', 'public')));
 app.use(express.static(path.join(__dirname, '..', 'client')));
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
