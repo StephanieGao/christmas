@@ -18,6 +18,13 @@ const SkeletonUtils =
   SkeletonUtilsModule.default ||
   SkeletonUtilsModule;
 
+const BOOT_BASE_HEIGHT = 0.35;
+const WALK_IDLE_SPEED = 1.2;
+const WALK_ACTIVE_SPEED = 5.2;
+
+const WALK_TILT_SPEED = 0.9;
+const WALK_TILT_AMOUNT = 0.08;
+
 const CHARACTER_MODEL_CONFIGS = {
   steph: {
     url: new URL('../assets/character/steph.glb', import.meta.url).href,
@@ -158,6 +165,7 @@ export function createAvatar(appearance = {}) {
   group.add(scarf);
 
   const bootGroup = new THREE.Group();
+  const bootMeshes = [];
   for (let i = 0; i < 2; i += 1) {
     const boot = new THREE.Mesh(
       new THREE.CylinderGeometry(0.28, 0.32, 0.5, 14),
@@ -166,9 +174,11 @@ export function createAvatar(appearance = {}) {
         'accent',
       ),
     );
-    boot.position.set(i === 0 ? -0.25 : 0.25, 0.35, 0);
+    const offsetX = i === 0 ? -0.25 : 0.25;
+    boot.position.set(offsetX, BOOT_BASE_HEIGHT, 0);
     boot.castShadow = true;
     bootGroup.add(boot);
+    bootMeshes.push(boot);
   }
   group.add(bootGroup);
 
@@ -333,6 +343,11 @@ export function createAvatar(appearance = {}) {
     externalModelKey = null;
     externalFrontLight = null;
     setBaseVisibility(true);
+    animationState.externalModel = null;
+    animationState.externalModelBaseY = 0;
+    animationState.externalBobPhase = 0;
+    animationState.externalModelBaseX = 0;
+    animationState.groupTilt = 0;
   }
 
   function showExternalModel(character) {
@@ -382,6 +397,10 @@ export function createAvatar(appearance = {}) {
         cloned.position.y += config.yOffset || 0;
         externalModelInstance = cloned;
         externalModelKey = character;
+        animationState.externalModel = cloned;
+        animationState.externalModelBaseY = cloned.position.y;
+        animationState.externalModelBaseX = cloned.position.x;
+        animationState.externalBobPhase = 0;
         group.add(cloned);
 
         if (externalFrontLight && externalFrontLight.parent) {
@@ -406,6 +425,15 @@ export function createAvatar(appearance = {}) {
     outfit: config.outfit,
     hair: config.hair,
     character: config.character || 'steph',
+  };
+  const animationState = {
+    boots: bootMeshes,
+    stridePhase: Math.random() * Math.PI * 2,
+    externalModel: null,
+    externalModelBaseY: 0,
+    externalModelBaseX: 0,
+    externalBobPhase: Math.random() * Math.PI * 2,
+    groupTilt: 0,
   };
 
   function setOutfit(name) {
@@ -458,6 +486,7 @@ export function createAvatar(appearance = {}) {
   return {
     group,
     materials: { body: bodyMat, accent: accentMat },
+    animation: animationState,
     setColors,
     setOutfit,
     setHair,
@@ -560,8 +589,29 @@ export function hydrateWorld(context, state) {
         player.transform?.position?.z || 0,
       );
       scene.add(avatar.group);
-      remotePlayers.set(player.id, { ...avatar, targetTransform: player.transform });
+      remotePlayers.set(player.id, {
+        ...avatar,
+        targetTransform: player.transform,
+        lastRemotePosition: player.transform?.position
+          ? { ...player.transform.position }
+          : null,
+        isMoving: false,
+      });
     } else {
+      const prevPosition = existing.lastRemotePosition;
+      const nextPosition = player.transform?.position;
+      if (prevPosition && nextPosition) {
+        const dx = nextPosition.x - prevPosition.x;
+        const dy = nextPosition.y - prevPosition.y;
+        const dz = nextPosition.z - prevPosition.z;
+        existing.isMoving = Math.hypot(dx, dy, dz) > 0.01;
+      } else {
+        existing.isMoving = false;
+      }
+      if (nextPosition) {
+        existing.lastRemotePosition = { ...nextPosition };
+      }
+      existing.targetTransform = player.transform;
       updateTransform(existing.group, player.transform);
       existing.setAppearance(normalized);
     }
@@ -587,4 +637,67 @@ export function updateTransform(group, transform) {
   if (!transform) return;
   group.position.set(transform.position.x, transform.position.y, transform.position.z);
   group.rotation.y = transform.rotation.y || 0;
+}
+
+export function updateAvatarWalkPose(avatar, { isMoving = false, speedFactor = 1 } = {}, delta = 0) {
+  if (!avatar || !avatar.animation) return;
+  const animation = avatar.animation;
+  const boots = animation.boots;
+  const speed = (isMoving ? WALK_ACTIVE_SPEED : WALK_IDLE_SPEED) * Math.max(0.4, speedFactor);
+  animation.stridePhase += delta * speed;
+  if (animation.stridePhase > Math.PI * 2) {
+    animation.stridePhase -= Math.PI * 2;
+  }
+  const amplitude = isMoving ? 0.25 : 0.07;
+  const lift = isMoving ? 0.08 : 0.02;
+  boots?.forEach((boot, index) => {
+    const phaseOffset = index % 2 === 0 ? 0 : Math.PI;
+    const footPhase = animation.stridePhase + phaseOffset;
+    const targetZ = Math.sin(footPhase) * amplitude;
+    const targetY = BOOT_BASE_HEIGHT + Math.max(0, Math.sin(footPhase)) * lift;
+    boot.position.z = THREE.MathUtils.lerp(boot.position.z, targetZ, 0.25);
+    boot.position.y = THREE.MathUtils.lerp(boot.position.y, targetY, 0.2);
+    const rotationTarget = Math.sin(footPhase) * (isMoving ? 0.35 : 0.1);
+    const baseX = index === 0 ? -0.25 : 0.25;
+    const sideAmplitude = isMoving ? 0.14 : 0.05;
+    const sideOffset =
+      Math.sin(animation.stridePhase * 0.75 + phaseOffset * 0.5) * sideAmplitude * (index === 0 ? 1 : -1);
+    const targetX = baseX + sideOffset;
+    boot.position.x = THREE.MathUtils.lerp(boot.position.x, targetX, 0.2);
+    boot.rotation.x = THREE.MathUtils.lerp(boot.rotation.x, rotationTarget, 0.25);
+  });
+  const tiltScale = isMoving ? 1 : 0.35;
+  const tiltTarget =
+    Math.sin(animation.stridePhase * (isMoving ? WALK_TILT_SPEED : WALK_TILT_SPEED * 0.8)) *
+    WALK_TILT_AMOUNT *
+    tiltScale;
+  animation.groupTilt = THREE.MathUtils.lerp(
+    animation.groupTilt ?? 0,
+    tiltTarget,
+    0.16,
+  );
+  avatar.group.rotation.z = animation.groupTilt;
+  if (animation.externalModel) {
+    const bobSpeed = isMoving ? 6.2 : 2.2;
+    animation.externalBobPhase += delta * bobSpeed;
+    if (animation.externalBobPhase > Math.PI * 2) {
+      animation.externalBobPhase -= Math.PI * 2;
+    }
+    const bobAmplitude = isMoving ? 0.16 : 0.04;
+    const bobOffset = Math.sin(animation.externalBobPhase) * bobAmplitude;
+    const targetExternalY = (animation.externalModelBaseY || 0) + bobOffset;
+    animation.externalModel.position.y = THREE.MathUtils.lerp(
+      animation.externalModel.position.y,
+      targetExternalY,
+      0.25,
+    );
+    const lateralAmplitude = isMoving ? 0.08 : 0.02;
+    const lateralOffset = Math.cos(animation.externalBobPhase * 0.7) * lateralAmplitude;
+    const targetExternalX = (animation.externalModelBaseX || 0) + lateralOffset;
+    animation.externalModel.position.x = THREE.MathUtils.lerp(
+      animation.externalModel.position.x,
+      targetExternalX,
+      0.25,
+    );
+  }
 }

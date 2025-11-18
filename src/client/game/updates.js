@@ -9,7 +9,7 @@ import {
   HOUSE_GLOW_INTERVAL,
 } from '../constants/game.js';
 import { playFootstepSound } from '../audio/audio.js';
-import { sendAvatarUpdate } from './avatar.js';
+import { sendAvatarUpdate, updateAvatarWalkPose } from './avatar.js';
 import {
   updateLightStrand,
   updateThrowCharge,
@@ -26,6 +26,7 @@ export function startAnimationLoop(context) {
     const delta = context.clock.getDelta();
     context.elapsedTime += delta;
     updateSnow(context, delta);
+    animateAvatarWalks(context, delta);
     const worldActive =
       context.uiState.storyComplete && Boolean(context.localState.sessionCode);
     if (!worldActive) {
@@ -33,6 +34,7 @@ export function startAnimationLoop(context) {
       return;
     }
     updatePlayer(context, delta, context.elapsedTime);
+    animateAvatarWalks(context, delta);
     updateLightStrand(context, delta, context.elapsedTime);
     updateThrowCharge(context);
     updateThrowEffects(context, delta);
@@ -169,7 +171,7 @@ export function updatePlayer(context, delta, elapsed) {
     }
   }
 
-  const baseHeight = 0;
+  const baseHeight = -0.25;
   const bob = isMoving ? Math.max(0, Math.sin(elapsed * 6) * 0.08) : 0;
   const targetBob = baseHeight + bob + jumpState.offset;
   const lerpFactor = jumpState.grounded ? (isMoving ? 0.35 : 0.2) : 1;
@@ -189,6 +191,23 @@ export function updatePlayer(context, delta, elapsed) {
   const desiredPosition = localPlayer.group.position.clone().add(offset);
   camera.position.lerp(desiredPosition, 0.35);
   camera.lookAt(cameraTarget);
+}
+
+function animateAvatarWalks(context, delta) {
+  const { localPlayer, movementState, remotePlayers } = context;
+  if (localPlayer) {
+    updateAvatarWalkPose(
+      localPlayer,
+      {
+        isMoving: context.playerIsMoving,
+        speedFactor: movementState.boostTimer > 0 ? 1.2 : 1,
+      },
+      delta,
+    );
+  }
+  remotePlayers.forEach((avatar) => {
+    updateAvatarWalkPose(avatar, { isMoving: Boolean(avatar.isMoving) }, delta);
+  });
 }
 
 export function updateSnow(context, delta) {
