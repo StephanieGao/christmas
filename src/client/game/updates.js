@@ -17,6 +17,7 @@ import {
   updateDropProjectiles,
   updateBulbPickups,
   updateSparkEffects,
+  updateStringSegments,
 } from './strand.js';
 import { updateHouseGlow } from './world.js';
 
@@ -26,6 +27,7 @@ export function startAnimationLoop(context) {
     const delta = context.clock.getDelta();
     context.elapsedTime += delta;
     updateSnow(context, delta);
+    updateStringSegments(context, delta);
     animateAvatarWalks(context, delta);
     const worldActive =
       context.uiState.storyComplete && Boolean(context.localState.sessionCode);
@@ -232,7 +234,7 @@ export function updateDecorZoneHighlights(context, delta) {
   decorZones.forEach((zone) => {
     const distance = zone.anchor.distanceTo(playerPos);
     const targetGlow = distance < zone.activationRadius ? 0.85 : 0;
-    zone.glow = THREE.MathUtils.lerp(zone.glow, targetGlow, delta * 4);
+    zone.glow = THREE.MathUtils.lerp(zone.glow, targetGlow, delta * 5);
     zone.mesh.material.opacity = zone.glow;
     zone.mesh.scale.setScalar(1 + zone.glow * 0.1);
   });

@@ -58,6 +58,8 @@ export function createGameContext() {
   const raycaster = new THREE.Raycaster();
   const pointer = new THREE.Vector2();
   const decorZones = [];
+  const cabinAnchors = [];
+  const anchorColliders = [];
   const collectibles = [];
   const bulbPickups = [];
   const bulbSpawnBounds = { x: 110, z: 110 };
@@ -109,12 +111,31 @@ export function createGameContext() {
     swingPhase: 0,
     cachedPoints: [],
   };
+  const stringPlacementState = {
+    stage: 'IDLE',
+    awaitingSecondAnchor: false,
+    firstAnchor: null,
+    secondAnchor: null,
+    pattern: [],
+    preview: null,
+    tempSegments: [],
+  };
   const throwState = {
     charging: false,
     zone: null,
     pointerId: null,
     startTime: 0,
     progress: 0,
+  };
+  const coilState = {
+    lightsTotal: 0,
+    lightsRemaining: 0,
+    bulbSpacing: 0.24,
+    mesh: null,
+    lightNodes: [],
+    tipPosition: new THREE.Vector3(0.65, 1.1, 0.3),
+    isEmpty: false,
+    tipWorld: new THREE.Vector3(),
   };
   const movementState = {
     baseSpeed: 5,
@@ -158,6 +179,8 @@ export function createGameContext() {
     placementSurfaces,
     terrainMeshes,
     decorZones,
+    cabinAnchors,
+    anchorColliders,
     collectibles,
     bulbPickups,
     bulbSpawnBounds,
@@ -180,6 +203,8 @@ export function createGameContext() {
     inputState,
     strandState,
     throwState,
+    stringPlacementState,
+    coilState,
     movementState,
     zoomState,
     jumpState,

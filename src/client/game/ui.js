@@ -37,6 +37,7 @@ import {
   isStrandFull,
   beginThrowCharge,
   finishThrowCharge,
+  completeStringAttachment,
   placeDecoration,
 } from './strand.js';
 
@@ -298,11 +299,18 @@ export function setupInput(context) {
     closeRadialMenu(context);
     ensureAudioContext();
     const zone = intersectDecorZone(context, event);
-    if (zone && context.throwState && context.throwState.charging === false) {
-      if (beginThrowCharge(context, zone)) {
-        context.throwState.pointerId = event.pointerId;
-        renderer.domElement.setPointerCapture(event.pointerId);
-        return;
+    if (zone) {
+      if (context.stringPlacementState.awaitingSecondAnchor) {
+        if (completeStringAttachment(context, zone)) {
+          return;
+        }
+      }
+      if (context.throwState && context.throwState.charging === false) {
+        if (beginThrowCharge(context, zone)) {
+          context.throwState.pointerId = event.pointerId;
+          renderer.domElement.setPointerCapture(event.pointerId);
+          return;
+        }
       }
     }
     dragState.active = true;

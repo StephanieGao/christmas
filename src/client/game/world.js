@@ -18,6 +18,8 @@ function getDecorationGlowTexture() {
   return decorationGlowTexture;
 }
 
+let anchorIdCounter = 0;
+
 export function initWorld(context) {
   const village = buildVillage(context);
   context.placementSurfaces.push(village.ground, ...village.cabins);
@@ -37,6 +39,8 @@ function buildVillage(context) {
     terrainMeshes,
     placementSurfaces,
     bulbSpawnBounds,
+    cabinAnchors,
+    anchorColliders,
   } = context;
 
   decorZones.length = 0;
@@ -44,6 +48,8 @@ function buildVillage(context) {
   bulbPickups.length = 0;
   houseGlowState.clear();
   terrainMeshes.length = 0;
+  cabinAnchors.length = 0;
+  anchorColliders.length = 0;
 
   const groundGeo = new THREE.PlaneGeometry(160, 160, 120, 120);
   const pos = groundGeo.attributes.position;
@@ -243,6 +249,7 @@ function buildVillage(context) {
     cabinSurfaces.push(...cabin.surfaces);
     scene.add(cabin.group);
     placementSurfaces.push(...cabin.surfaces);
+    generateCabinAnchors(context, cabin.group, config);
     const frontAnchor = computeFrontAnchor(config);
     walkwayAnchors.push({
       id: config.id,
@@ -343,37 +350,184 @@ function buildVillage(context) {
     const depthOffset = config.style.body.depth / 2 + 0.6;
     const baseHeight = config.style.body.height * 0.8;
 
-    for (let i = 0; i < segments; i += 1) {
-      const span = segments === 1 ? 0 : (i / (segments - 1)) * 2 - 1;
-      const anchor = new THREE.Vector3(config.position.x, baseHeight, config.position.z)
-        .add(frontDir.clone().multiplyScalar(depthOffset))
-        .add(rightDir.clone().multiplyScalar(span * config.style.body.width * 0.35));
-      const highlight = new THREE.Mesh(
-        new THREE.PlaneGeometry(config.style.body.width * 0.35, 0.6),
-        new THREE.MeshBasicMaterial({
-          color: 0xfff4d0,
-          transparent: true,
-          opacity: 0,
-          depthWrite: false,
-          side: THREE.DoubleSide,
-        }),
+    const lateralOffset = config.style.body.width / 2 + 0.4;
+    const faceConfigs = [
+      {
+        normal: frontDir,
+        perp: rightDir,
+        offset: depthOffset,
+        length: config.style.body.width,
+        name: 'front',
+      },
+      {
+        normal: frontDir.clone().negate(),
+        perp: rightDir,
+        offset: -depthOffset,
+        length: config.style.body.width,
+        name: 'back',
+      },
+      {
+        normal: rightDir,
+        perp: frontDir.clone().negate(),
+        offset: lateralOffset,
+        length: config.style.body.depth,
+        name: 'right',
+      },
+      {
+        normal: rightDir.clone().negate(),
+        perp: frontDir,
+        offset: -lateralOffset,
+        length: config.style.body.depth,
+        name: 'left',
+      },
+    ];
+
+    const squareSize = 0.4;
+    const rows = 3;
+    const columns = Math.max(segments, 3);
+
+    faceConfigs.forEach((face) => {
+      for (let row = 0; row < rows; row += 1) {
+        const heightOffset = (row / (rows - 1)) * config.style.body.height * 0.5;
+        for (let col = 0; col < columns; col += 1) {
+          const span = columns === 1 ? 0 : (col / (columns - 1)) * 2 - 1;
+          const spanDir = face.perp.clone().multiplyScalar(span * face.length * 0.35);
+          const anchor = new THREE.Vector3(config.position.x, baseHeight + heightOffset, config.position.z)
+            .add(face.normal.clone().multiplyScalar(face.offset))
+            .add(spanDir);
+          const highlightPosition = anchor.clone().add(face.normal.clone().multiplyScalar(0.08));
+          const highlight = new THREE.Mesh(
+            new THREE.PlaneGeometry(squareSize, squareSize),
+            new THREE.MeshBasicMaterial({
+              color: 0xfff4d0,
+            transparent: true,
+            opacity: 0,
+            depthWrite: false,
+            side: THREE.DoubleSide,
+          }),
+        );
+          highlight.position.copy(highlightPosition);
+          highlight.lookAt(highlightPosition.clone().add(face.normal));
+          highlight.userData.zoneId = `${config.id}-zone-${face.name}-${row}-${col}`;
+          scene.add(highlight);
+          const zoneData = {
+            id: highlight.userData.zoneId,
+            houseId: config.id,
+            mesh: highlight,
+            anchor,
+          normal: face.normal.clone(),
+          glow: 0,
+          activationRadius: 9,
+        };
+          highlight.userData.zone = zoneData;
+          decorZones.push(zoneData);
+          placementSurfaces.push(highlight);
+        }
+      }
+    });
+  }
+
+  function generateCabinAnchors(context, cabinGroup, config) {
+    const { cabinAnchors, anchorColliders, scene } = context;
+    const { style } = config;
+    const width = style.body.width + 0.6;
+    const depth = style.body.depth + 0.6;
+    const height = style.body.height + 0.2;
+    const roofPeak = height + (style.roof?.height || 2);
+    const spacing = 0.32;
+    const verticalSpacing = 0.35;
+    const roofInset = Math.min(width * 0.2, 1.2);
+    const worldQuat = new THREE.Quaternion();
+    cabinGroup.getWorldQuaternion(worldQuat);
+
+    const edges = [
+      {
+        start: new THREE.Vector3(-width / 2, height, depth / 2),
+        end: new THREE.Vector3(width / 2, height, depth / 2),
+        normal: new THREE.Vector3(0, 0, 1),
+        spacing,
+      },
+      {
+        start: new THREE.Vector3(-width / 2, height, -depth / 2),
+        end: new THREE.Vector3(width / 2, height, -depth / 2),
+        normal: new THREE.Vector3(0, 0, -1),
+        spacing,
+      },
+      {
+        start: new THREE.Vector3(-width / 2, height, depth / 2),
+        end: new THREE.Vector3(-width / 2, height, -depth / 2),
+        normal: new THREE.Vector3(-1, 0, 0),
+        spacing,
+      },
+      {
+        start: new THREE.Vector3(width / 2, height, depth / 2),
+        end: new THREE.Vector3(width / 2, height, -depth / 2),
+        normal: new THREE.Vector3(1, 0, 0),
+        spacing,
+      },
+      {
+        start: new THREE.Vector3(-width / 2 + roofInset, roofPeak, 0),
+        end: new THREE.Vector3(width / 2 - roofInset, roofPeak, 0),
+        normal: new THREE.Vector3(0, 1, 0),
+        spacing: 0.28,
+      },
+      {
+        start: new THREE.Vector3(-width / 2, height, depth / 2),
+        end: new THREE.Vector3(-width / 2, height + 1.5, depth / 2),
+        normal: new THREE.Vector3(-1, 0, 0),
+        spacing: verticalSpacing,
+      },
+      {
+        start: new THREE.Vector3(width / 2, height, depth / 2),
+        end: new THREE.Vector3(width / 2, height + 1.5, depth / 2),
+        normal: new THREE.Vector3(1, 0, 0),
+        spacing: verticalSpacing,
+      },
+    ];
+
+    edges.forEach((edge) => {
+      pushAnchorsAlongEdge(
+        context,
+        cabinGroup,
+        worldQuat,
+        config.id,
+        edge.start,
+        edge.end,
+        edge.normal,
+        edge.spacing,
       );
-      highlight.position.copy(anchor);
-      highlight.lookAt(anchor.clone().add(frontDir));
-      highlight.userData.zoneId = `${config.id}-zone-${i}`;
-      scene.add(highlight);
-      const zoneData = {
-        id: highlight.userData.zoneId,
-        houseId: config.id,
-        mesh: highlight,
-        anchor,
-        normal: frontDir.clone(),
-        glow: 0,
-        activationRadius: 9,
-      };
-      highlight.userData.zone = zoneData;
-      decorZones.push(zoneData);
-      placementSurfaces.push(highlight);
+    });
+  }
+
+  function pushAnchorsAlongEdge(
+    context,
+    cabinGroup,
+    worldQuat,
+    cabinId,
+    startLocal,
+    endLocal,
+    normalLocal,
+    spacing = 0.32,
+  ) {
+    const { cabinAnchors, anchorColliders, scene } = context;
+    const direction = endLocal.clone().sub(startLocal);
+    const length = Math.max(direction.length(), 0.0001);
+    const steps = Math.max(1, Math.floor(length / spacing));
+    for (let i = 0; i <= steps; i += 1) {
+      const factor = steps === 0 ? 0 : i / steps;
+      const localPos = startLocal.clone().lerp(endLocal, factor);
+      const worldPos = cabinGroup.localToWorld(localPos.clone());
+      const anchorNormal = normalLocal.clone().applyQuaternion(worldQuat).normalize();
+      const id = `${cabinId}-anchor-${anchorIdCounter++}`;
+      const collider = new THREE.Mesh(
+        new THREE.SphereGeometry(0.12, 8, 8),
+        new THREE.MeshBasicMaterial({ visible: false }),
+      );
+      collider.position.copy(worldPos);
+      collider.userData.anchorId = id;
+      scene.add(collider);
+      anchorColliders.push(collider);
+      cabinAnchors.push({ id, position: worldPos.clone(), normal: anchorNormal, collider, cabinId });
     }
   }
 
@@ -1385,19 +1539,39 @@ function createDecorationMesh(data) {
     default: {
       const group = new THREE.Group();
       const colors = Array.isArray(data.colors) && data.colors.length ? data.colors : null;
-      const bulbCount = colors ? colors.length : 6;
+      const bulbCount = Math.max(2, colors ? colors.length : 6);
       const glowMap = getDecorationGlowTexture();
-      const stringSpan = 4.4;
-      const halfSpan = stringSpan / 2;
-      const baseHeight = 2.35;
-      const sagAmount = 0.35;
-      const points = [
-        new THREE.Vector3(-halfSpan, baseHeight, 0),
-        new THREE.Vector3(0, baseHeight - sagAmount, 0),
-        new THREE.Vector3(halfSpan, baseHeight, 0),
-      ];
-      const strandCurve = new THREE.CatmullRomCurve3(points);
-      const strandGeometry = new THREE.TubeGeometry(strandCurve, 40, 0.06, 10, false);
+      const center = new THREE.Vector3(
+        data.transform.position.x,
+        data.transform.position.y || 2.35,
+        data.transform.position.z,
+      );
+      const fallbackSpan = 4.4;
+      const fallbackHalf = fallbackSpan / 2;
+      const fallbackSag = 0.35;
+      const anchors =
+        Array.isArray(data.anchorPoints) && data.anchorPoints.length === 2
+          ? data.anchorPoints.map((pt) => new THREE.Vector3(pt.x, pt.y, pt.z))
+          : null;
+      const startAnchor = anchors
+        ? anchors[0].clone()
+        : center.clone().add(new THREE.Vector3(-fallbackHalf, 0, 0));
+      const endAnchor = anchors
+        ? anchors[1].clone()
+        : center.clone().add(new THREE.Vector3(fallbackHalf, 0, 0));
+      const midpoint = startAnchor.clone().lerp(endAnchor, 0.5);
+      const distance = startAnchor.distanceTo(endAnchor);
+      const sagAmount = anchors
+        ? Math.min(0.75, Math.max(0.15, distance * 0.12))
+        : fallbackSag;
+      const lowestY = Math.min(startAnchor.y, endAnchor.y);
+      midpoint.y = lowestY - sagAmount;
+      const curve = new THREE.CatmullRomCurve3([
+        startAnchor.clone(),
+        midpoint,
+        endAnchor.clone(),
+      ]);
+      const strandGeometry = new THREE.TubeGeometry(curve, 64, 0.06, 10, false);
       const strandMaterial = new THREE.MeshStandardMaterial({
         color: 0x1f8b44,
         roughness: 0.8,
@@ -1406,7 +1580,11 @@ function createDecorationMesh(data) {
       const strandMesh = new THREE.Mesh(strandGeometry, strandMaterial);
       group.add(strandMesh);
       for (let i = 0; i < bulbCount; i += 1) {
-        const bulbColor = colors ? new THREE.Color(colors[i]) : color.clone ? color.clone() : new THREE.Color(color);
+        const bulbColor = colors
+          ? new THREE.Color(colors[i])
+          : color.clone
+          ? color.clone()
+          : new THREE.Color(color);
         const material = new THREE.MeshStandardMaterial({
           color: bulbColor,
           emissive: bulbColor,
@@ -1414,9 +1592,8 @@ function createDecorationMesh(data) {
         });
         const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.2, 12, 12), material);
         const spanT = bulbCount > 1 ? i / (bulbCount - 1) : 0.5;
-        const x = -halfSpan + spanT * stringSpan;
-        const y = baseHeight - Math.sin(spanT * Math.PI) * sagAmount;
-        bulb.position.set(x, y, 0);
+        const point = curve.getPoint(spanT);
+        bulb.position.copy(point);
         const halo = new THREE.Sprite(
           new THREE.SpriteMaterial({
             map: glowMap,

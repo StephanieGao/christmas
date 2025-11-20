@@ -277,6 +277,9 @@ function handleDecorationUpdate(ws, mutationType, data) {
       scale: data?.scale || 1,
     },
     color: data?.color || '#fff8e7',
+    anchorPoints: Array.isArray(data?.anchorPoints)
+      ? data.anchorPoints.map((pt) => ({ x: pt.x, y: pt.y, z: pt.z }))
+      : undefined,
     glow: data?.glow ?? 0.5,
     cabinId: data?.cabinId || 'cabin-a',
     colors: Array.isArray(data?.colors) ? [...data.colors] : undefined,

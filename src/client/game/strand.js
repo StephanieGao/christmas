@@ -20,7 +20,7 @@ import {
   throwMeterFill,
   throwMeterLabel,
 } from '../components/domElements.js';
-import { sampleTerrainHeight, boostHouseGlow } from './world.js';
+import { sampleTerrainHeight, boostHouseGlow, upsertDecoration } from './world.js';
 
 let cachedGlowTexture = null;
 function getGlowTexture() {
@@ -39,6 +39,26 @@ function getGlowTexture() {
   cachedGlowTexture.needsUpdate = true;
   return cachedGlowTexture;
 }
+
+function generateDecorationId() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `decor-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const STRING_STAGES = {
+  IDLE: 'IDLE',
+  AIMING_FIRST: 'AIMING_FIRST',
+  THROWING_FIRST: 'THROWING_FIRST',
+  FIRST_ATTACHED: 'FIRST_ATTACHED',
+  AIMING_SECOND: 'AIMING_SECOND',
+  THROWING_SECOND: 'THROWING_SECOND',
+  SECOND_ATTACHED: 'SECOND_ATTACHED',
+  FINALIZED: 'FINALIZED',
+};
+
+const THROW_DURATION_MS = 780;
 
 export function initStrand(context) {
   if (strandBar) {
@@ -180,6 +200,13 @@ function initLightStrand(context) {
   strandState.socketMaterials = socketMaterials;
   strandState.socketAuras = socketAuras;
   strandState.socketLights = socketLights;
+  const coilVisual = createCoilVisual(context, STRAND_SOCKET_COUNT);
+  localPlayer.group.add(coilVisual.group);
+  context.coilState.mesh = coilVisual.group;
+  context.coilState.lightNodes = coilVisual.nodes;
+  context.coilState.lightsTotal = coilVisual.nodes.length;
+  context.coilState.lightsRemaining = coilVisual.nodes.length;
+  updateCoilVisual(context.coilState);
 }
 
 function initStrandUI(context) {
@@ -194,6 +221,74 @@ function initStrandUI(context) {
     strandState.uiDots.push(dot);
   }
   updateStrandUI(context);
+}
+
+const TEMP_SEGMENT_MAX_POINTS = 48;
+
+function createCoilVisual(context, bulbCount) {
+  const { THREE: three } = context;
+  const coilGroup = new three.Group();
+  const base = new three.Mesh(
+    new three.TorusGeometry(0.5, 0.22, 16, 40),
+    new three.MeshStandardMaterial({
+      color: 0xffd19a,
+      roughness: 0.55,
+      metalness: 0.2,
+    }),
+  );
+  base.rotation.x = Math.PI / 2;
+  coilGroup.add(base);
+  const bulbNodes = [];
+  for (let i = 0; i < bulbCount; i += 1) {
+    const bulb = new three.Mesh(
+      new three.SphereGeometry(0.08, 10, 10),
+      new three.MeshStandardMaterial({
+        color: 0xfff5d4,
+        emissive: 0xfff5d4,
+        emissiveIntensity: 0.4,
+        roughness: 0.35,
+      }),
+    );
+    const angle = (i / bulbCount) * Math.PI * 1.7;
+    const radius = 0.34 + Math.sin(i * 0.5) * 0.03;
+    bulb.position.set(
+      Math.cos(angle) * radius,
+      Math.sin(angle) * 0.08,
+      Math.sin(angle) * radius * 0.35,
+    );
+    bulbNodes.push(bulb);
+    coilGroup.add(bulb);
+  }
+  coilGroup.rotation.set(0, Math.PI / 5, 0);
+  coilGroup.scale.set(0.92, 0.92, 0.92);
+  coilGroup.position.set(-0.24, 0, -0.18);
+  return { group: coilGroup, nodes: bulbNodes, base };
+}
+
+function updateCoilVisual(coilState) {
+  if (!coilState.mesh || !coilState.lightNodes.length) return;
+  const total = coilState.lightsTotal || coilState.lightNodes.length;
+  const fraction = total > 0 ? Math.max(0, Math.min(1, coilState.lightsRemaining / total)) : 0;
+  const visibleCount = Math.round(fraction * coilState.lightNodes.length);
+  coilState.lightNodes.forEach((node, index) => {
+    node.visible = index < visibleCount;
+  });
+  const baseMaterial = coilState.mesh.children[0]?.material;
+  if (baseMaterial) {
+    const baseColor = new THREE.Color(fraction > 0.05 ? 0xffd19a : 0x5d5d5d);
+    baseMaterial.color.copy(baseColor);
+    baseMaterial.emissive.setScalar(fraction > 0 ? 0.1 : 0);
+  }
+  coilState.isEmpty = fraction <= 0;
+}
+
+function getCoilTipWorld(context) {
+  const { coilState, localPlayer } = context;
+  if (!localPlayer) return new THREE.Vector3();
+  const tip = coilState.tipWorld;
+  tip.copy(coilState.tipPosition);
+  localPlayer.group.localToWorld(tip);
+  return tip;
 }
 
 export function isStrandFull(context) {
@@ -400,18 +495,36 @@ export function updateSparkEffects(context, delta) {
 }
 
 export function beginThrowCharge(context, zone) {
-  const { throwState, strandState } = context;
-  if (!strandState.sockets.some((slot) => slot)) {
+  const { throwState, strandState, stringPlacementState } = context;
+  const isSecondAttachment =
+    stringPlacementState.stage === STRING_STAGES.FIRST_ATTACHED ||
+    stringPlacementState.awaitingSecondAnchor;
+  if (!isSecondAttachment && !strandState.sockets.some((slot) => slot)) {
     if (context.showToast) {
       context.showToast('Collect some bulbs first!');
     }
     return false;
   }
-  if (!isStrandFull(context)) {
+  if (!isSecondAttachment && !isStrandFull(context)) {
     if (context.showToast) {
       context.showToast('Collect a full strand before decorating!');
     }
     return false;
+  }
+  if (!zone) return false;
+  if (
+    stringPlacementState.stage === STRING_STAGES.THROWING_SECOND ||
+    stringPlacementState.stage === STRING_STAGES.AIMING_SECOND
+  ) {
+    if (context.showToast) {
+      context.showToast('Finish the current string before starting again.');
+    }
+    return false;
+  }
+  if (stringPlacementState.stage === STRING_STAGES.FIRST_ATTACHED) {
+    stringPlacementState.stage = STRING_STAGES.AIMING_SECOND;
+  } else {
+    stringPlacementState.stage = STRING_STAGES.AIMING_FIRST;
   }
   throwState.charging = true;
   throwState.zone = zone;
@@ -473,27 +586,60 @@ export function finishThrowCharge(context, forceCancel = false) {
 }
 
 function performLightThrow(context, zone) {
-  const { strandState, tempVecA, localPlayer, scene, throwEffects, THREE: three } = context;
-  const pattern = strandState.sockets.map((color) => color || '#ffecc3');
-  const origin = tempVecA.set(0, 1.15, 0.7);
-  localPlayer.group.localToWorld(origin);
-  const mesh = new THREE.Mesh(
-    new THREE.SphereGeometry(0.2, 12, 12),
-    new THREE.MeshBasicMaterial({ color: 0xfff4d6, transparent: true, opacity: 1 }),
+  if (!zone) return;
+  const {
+    strandState,
+    localPlayer,
+    scene,
+    throwEffects,
+    THREE: three,
+    stringPlacementState,
+    coilState,
+  } = context;
+  const stage = stringPlacementState.stage;
+  const isFirstThrow =
+    stage === STRING_STAGES.AIMING_FIRST || stage === STRING_STAGES.IDLE;
+  const origin =
+    isFirstThrow && stringPlacementState.stage !== STRING_STAGES.THROWING_SECOND
+      ? getCoilTipWorld(context)
+      : stringPlacementState.firstAnchor?.anchor.clone() || getCoilTipWorld(context);
+  const pattern =
+    isFirstThrow || !stringPlacementState.pattern.length
+      ? strandState.sockets.map((color) => color || '#ffecc3')
+      : stringPlacementState.pattern;
+  if (isFirstThrow) {
+    stringPlacementState.pattern = [...pattern];
+    coilState.lightsTotal = pattern.length;
+    coilState.lightsRemaining = pattern.length;
+    updateCoilVisual(coilState);
+  }
+  consumeStrandBulbs(context);
+  const mesh = new three.Mesh(
+    new three.SphereGeometry(0.18, 12, 12),
+    new three.MeshBasicMaterial({ color: 0xffdfaa, transparent: true, opacity: 1 }),
   );
   mesh.position.copy(origin);
   scene.add(mesh);
-  throwEffects.push({
+  const effect = {
     mesh,
     from: origin.clone(),
     to: zone.anchor.clone(),
     start: performance.now(),
-    duration: 650,
+    duration: THROW_DURATION_MS,
     zone,
     placed: false,
     pattern,
-  });
-  consumeStrandBulbs(context);
+    phase: isFirstThrow ? 1 : 2,
+    currentPosition: origin.clone(),
+  };
+  throwEffects.push(effect);
+  stringPlacementState.tempSegments.push(startTempSegment(context, origin, zone, effect));
+  stringPlacementState.stage = isFirstThrow
+    ? STRING_STAGES.THROWING_FIRST
+    : STRING_STAGES.THROWING_SECOND;
+  if (!isFirstThrow) {
+    stringPlacementState.secondAnchor = zone;
+  }
 }
 
 export function updateThrowEffects(context, delta) {
@@ -507,13 +653,11 @@ export function updateThrowEffects(context, delta) {
     effect.mesh.material.opacity = 1 - t;
     effect.mesh.scale.setScalar(three.MathUtils.lerp(1, 0.1, t));
     if (!effect.placed && t >= 0.95) {
-      placeDecoration(context, effect.zone.anchor, effect.zone.normal, {
-        typeId: 'string_lights',
-        color: '#ffecc3',
-        colors: effect.pattern,
-        cabinId: effect.zone.houseId,
-        glow: 0.95,
-      });
+      if (effect.phase === 1) {
+        beginPendingStringAttachment(context, effect.zone, effect.pattern);
+      } else {
+        completeStringAttachment(context, effect.zone);
+      }
       effect.placed = true;
     }
     if (t >= 1) {
@@ -778,25 +922,300 @@ function isNearCabin(position, bounds) {
   });
 }
 
+function computePointsLength(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    total += points[i].distanceTo(points[i - 1]);
+  }
+  return total;
+}
+
+function startTempSegment(context, startPoint, zone, effect) {
+  const { scene, THREE: three } = context;
+  const geometry = new three.BufferGeometry().setFromPoints([startPoint.clone()]);
+  const material = new three.LineBasicMaterial({
+    color: 0xfff4d6,
+    transparent: true,
+    opacity: 0.75,
+    linewidth: 4,
+  });
+  const line = new three.Line(geometry, material);
+  line.frustumCulled = false;
+  scene.add(line);
+  return {
+    points: [startPoint.clone()],
+    mesh: line,
+    target: zone.anchor.clone(),
+    zone,
+    effect,
+    bulbsUsed: 0,
+    wiggle: Math.random() * Math.PI * 2,
+    completed: false,
+  };
+}
+
+function cleanupTempSegments(context) {
+  const { stringPlacementState, scene } = context;
+  stringPlacementState.tempSegments.forEach((segment) => {
+    if (segment.mesh) {
+      if (segment.mesh.parent) {
+        scene.remove(segment.mesh);
+      }
+      segment.mesh.geometry?.dispose();
+      segment.mesh.material?.dispose();
+    }
+  });
+  stringPlacementState.tempSegments.length = 0;
+}
+
+export function updateStringSegments(context, delta) {
+  const { stringPlacementState, coilState } = context;
+  if (!stringPlacementState.tempSegments.length) return;
+  stringPlacementState.tempSegments.forEach((segment) => {
+    if (segment.completed || !segment.mesh) return;
+    const nextPos = segment.effect?.currentPosition?.clone() ?? segment.target.clone();
+    nextPos.x += Math.sin(segment.wiggle + segment.points.length * 0.35) * 0.03;
+    nextPos.z += Math.cos(segment.wiggle + segment.points.length * 0.18) * 0.02;
+    segment.points.push(nextPos);
+    if (segment.points.length > TEMP_SEGMENT_MAX_POINTS) {
+      segment.points.shift();
+    }
+    segment.mesh.geometry.setFromPoints(segment.points);
+    segment.mesh.geometry.computeBoundingSphere();
+    let length = computePointsLength(segment.points);
+    let threshold = (segment.bulbsUsed + 1) * coilState.bulbSpacing;
+    while (length >= threshold && coilState.lightsRemaining > 0) {
+      segment.bulbsUsed += 1;
+      coilState.lightsRemaining = Math.max(0, coilState.lightsRemaining - 1);
+      threshold = (segment.bulbsUsed + 1) * coilState.bulbSpacing;
+    }
+    if (segment.effect?.progress >= 0.99) {
+      segment.completed = true;
+    }
+  });
+  updateCoilVisual(coilState);
+  updateStringPreview(context);
+}
+
+function updateStringPreview(context) {
+  const { stringPlacementState, THREE: three } = context;
+  if (
+    stringPlacementState.stage !== STRING_STAGES.FIRST_ATTACHED ||
+    !stringPlacementState.preview ||
+    !stringPlacementState.firstAnchor
+  ) {
+    return;
+  }
+  const preview = stringPlacementState.preview;
+  const start = getCoilTipWorld(context);
+  const anchor = stringPlacementState.firstAnchor.anchor;
+  const mid = start.clone().lerp(anchor, 0.45);
+  const minHeight = Math.min(start.y, anchor.y);
+  mid.y = minHeight - 0.45;
+  const curve = new three.CatmullRomCurve3([start.clone(), mid, anchor.clone()]);
+  const tube = preview?.userData?.tube;
+  if (!tube) return;
+  const geometry = new three.TubeGeometry(curve, 28, 0.04, 10, false);
+  tube.geometry?.dispose();
+  tube.geometry = geometry;
+  const bulbInfos = preview.userData?.bulbInfos || [];
+  bulbInfos.forEach((info, index) => {
+    const spanT = bulbInfos.length === 1 ? 0.5 : index / (bulbInfos.length - 1);
+    const point = curve.getPoint(spanT);
+    info.mesh.position.copy(point);
+    info.glow.position.copy(point);
+    info.light.position.copy(point);
+  });
+}
+
+function cancelStringAttachmentPreview(context) {
+  const { stringPlacementState, scene } = context;
+  const preview = stringPlacementState.preview;
+  if (!preview) return;
+  scene.remove(preview);
+  const tube = preview.userData?.tube;
+  if (tube) {
+    tube.geometry?.dispose();
+    tube.material?.dispose();
+  }
+  const bulbInfos = preview.userData?.bulbInfos || [];
+  bulbInfos.forEach(({ mesh, glow }) => {
+    mesh.geometry?.dispose();
+    mesh.material?.dispose();
+    glow.material?.dispose();
+  });
+  stringPlacementState.preview = null;
+}
+
+function buildStringPreviewMesh(context, anchor, pattern) {
+  const { THREE: three } = context;
+  const glowMap = getGlowTexture();
+  const start = getCoilTipWorld(context);
+  const mid = start.clone().lerp(anchor, 0.45);
+  const minHeight = Math.min(start.y, anchor.y);
+  mid.y = minHeight - 0.45;
+
+  const curve = new three.CatmullRomCurve3([start.clone(), mid, anchor.clone()]);
+  const geometry = new three.TubeGeometry(curve, 32, 0.04, 10, false);
+  const tubeMaterial = new three.MeshStandardMaterial({
+    color: 0x1f8b44,
+    roughness: 0.55,
+    metalness: 0.25,
+    transparent: true,
+    opacity: 0.75,
+  });
+  const tubeMesh = new three.Mesh(geometry, tubeMaterial);
+  tubeMesh.renderOrder = 1;
+
+  const bulbCount = Math.max(2, pattern?.length || 8);
+  const bulbColors =
+    pattern && pattern.length
+      ? pattern
+      : Array.from({ length: bulbCount }, () => '#ffecc3');
+  const bulbInfos = [];
+  for (let i = 0; i < bulbCount; i += 1) {
+    const colorValue = bulbColors[i % bulbColors.length];
+    const bulbColor = new three.Color(colorValue);
+    const bulbMaterial = new three.MeshStandardMaterial({
+      color: bulbColor,
+      emissive: bulbColor,
+      emissiveIntensity: 0.9,
+      roughness: 0.25,
+      metalness: 0.08,
+    });
+    const bulb = new three.Mesh(new three.SphereGeometry(0.12, 12, 12), bulbMaterial);
+
+    const halo = new three.Sprite(
+      new three.SpriteMaterial({
+        map: glowMap,
+        color: bulbColor,
+        transparent: true,
+        opacity: 0.85,
+        blending: three.AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    halo.scale.set(0.8, 0.8, 0.8);
+
+    const light = new three.PointLight(bulbColor, 0.65, 3, 2);
+
+    bulbInfos.push({ mesh: bulb, glow: halo, light });
+  }
+
+  const preview = new three.Group();
+  preview.add(tubeMesh);
+  bulbInfos.forEach((info) => {
+    preview.add(info.mesh);
+    preview.add(info.glow);
+    preview.add(info.light);
+  });
+  preview.userData = { tube: tubeMesh, bulbInfos };
+
+  return preview;
+}
+
+function beginPendingStringAttachment(context, zone, pattern) {
+  const { stringPlacementState } = context;
+  if (!zone) return;
+  cancelStringAttachmentPreview(context);
+  stringPlacementState.awaitingSecondAnchor = true;
+  stringPlacementState.firstAnchor = zone;
+  stringPlacementState.pattern = pattern && pattern.length ? [...pattern] : stringPlacementState.pattern;
+  stringPlacementState.stage = STRING_STAGES.FIRST_ATTACHED;
+  const preview = buildStringPreviewMesh(context, zone.anchor, stringPlacementState.pattern);
+  if (preview) {
+    context.scene.add(preview);
+    stringPlacementState.preview = preview;
+  }
+  if (context.showToast) {
+    context.showToast('Pick another glowing spot to anchor the other end of the string.');
+  }
+}
+
+export function completeStringAttachment(context, zone) {
+  const { stringPlacementState, coilState } = context;
+  const firstAnchor = stringPlacementState.firstAnchor;
+  if (!zone || !firstAnchor) return false;
+  if (zone.id === firstAnchor.id) {
+    if (context.showToast) {
+      context.showToast('Pick a different spot to anchor the other end.');
+    }
+    return false;
+  }
+  if (zone.houseId !== firstAnchor.houseId) {
+    if (context.showToast) {
+      context.showToast('Both ends must attach to the same cabin.');
+    }
+    return false;
+  }
+  const firstAnchorPos = firstAnchor.anchor;
+  const secondAnchorPos = zone.anchor;
+  const anchorPoints = [
+    { x: firstAnchorPos.x, y: firstAnchorPos.y, z: firstAnchorPos.z },
+    { x: secondAnchorPos.x, y: secondAnchorPos.y, z: secondAnchorPos.z },
+  ];
+  cancelStringAttachmentPreview(context);
+  cleanupTempSegments(context);
+  const pattern =
+    stringPlacementState.pattern.length > 0 ? [...stringPlacementState.pattern] : ['#ffecc3'];
+  placeDecoration(context, firstAnchorPos, zone.normal, {
+    typeId: 'string_lights',
+    colors: pattern,
+    anchorPoints,
+    cabinId: zone.houseId,
+    glow: 0.95,
+  });
+  stringPlacementState.stage = STRING_STAGES.FINALIZED;
+  stringPlacementState.awaitingSecondAnchor = false;
+  stringPlacementState.firstAnchor = null;
+  stringPlacementState.secondAnchor = null;
+  stringPlacementState.pattern = [];
+  stringPlacementState.tempSegments.length = 0;
+  coilState.lightsRemaining = 0;
+  updateCoilVisual(coilState);
+  if (context.showToast) {
+    context.showToast('String hung! Ready for another bundle.');
+  }
+  stringPlacementState.stage = STRING_STAGES.IDLE;
+  return true;
+}
+
 export function placeDecoration(context, point, normal, options = {}) {
   const { localState, network, THREE: three } = context;
   const typeId = options.typeId || localState.decorType;
   const chosenColor = options.color || defaultDecorColors[typeId] || localState.decorColor;
   const cabinId = options.cabinId || 'storybook-home';
   const facingNormal = normal ? normal.clone() : new three.Vector3(0, 1, 0);
+  const decorationId = options.id || generateDecorationId();
+  const transformPosition =
+    typeId === 'string_lights'
+      ? { x: 0, y: 0, z: 0 }
+      : { x: point.x, y: point.y, z: point.z };
   const decoration = {
+    id: decorationId,
     typeId,
     color: chosenColor,
     glow: options.glow ?? 0.65,
     cabinId,
     transform: {
-      position: { x: point.x, y: point.y, z: point.z },
+      position: transformPosition,
       rotation: { x: 0, y: Math.atan2(facingNormal.x, facingNormal.z) || 0, z: 0 },
       scale: 1,
     },
     colors: Array.isArray(options.colors) ? options.colors : undefined,
+    anchorPoints: options.anchorPoints
+      ? options.anchorPoints.map((pt) => ({
+          x: pt.x,
+          y: pt.y,
+          z: pt.z,
+        }))
+      : undefined,
   };
 
+  upsertDecoration(context, {
+    ...decoration,
+    type: typeId,
+  });
   network.send('place_decoration', decoration);
   localState.decorType = typeId;
   if (context.showToast) {
